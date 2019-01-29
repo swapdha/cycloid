@@ -7,13 +7,16 @@
 
 namespace coneslam {
 
-//const float NOISE_ANGULAR = 0.4;
-//const float NOISE_LONG = 20;
-//const float NOISE_LAT = 1;
+// const float NOISE_ANGULAR = 0.4;
+// const float NOISE_LONG = 16;
+// const float NOISE_LAT = 8;
 
-const float NOISE_ANGULAR = 0.4;
-const float NOISE_LONG = 16;
-const float NOISE_LAT = 8;
+const float CONE_RADIUS = 44.5/M_PI/200.;
+const float NOISE_ANGULAR = 0.2*3.3;
+const float NOISE_LONG = 4*3.3;
+const float NOISE_LAT = 2*3.3;
+const float NOISE_STEER_u = 0.3*3.3;
+const float NOISE_STEER_s = 0.3*3.3;
 
 static double randn() {
   // #include <random> doesn't work in my ARM cross-compiler so I'm just
@@ -33,9 +36,10 @@ Localizer::~Localizer() {
 
 void Localizer::Reset() {
   for (int i = 0; i < n_particles_; i++) {
-    particles_[i].x = 0.25*randn() + home_x_;
-    particles_[i].y = 0.25*randn() + home_y_;
-    particles_[i].theta = randn() * 0.2 + home_theta_;
+    particles_[i].x = 0.125*randn() + home_x_;
+    particles_[i].y = 0.125*randn() + home_y_;
+    particles_[i].theta = randn() * 0.1 + home_theta_;
+    particles_[i].heading = particles_[i].theta;
   }
   ResetLikelihood();
 }
@@ -82,8 +86,19 @@ bool Localizer::LoadLandmarks(const char *filename) {
 void Localizer::Predict(float ds, float w, float dt) {
   for (int i = 0; i < n_particles_; i++) {
     float t = particles_[i].theta + w*dt + randn()*NOISE_ANGULAR*ds*dt;
-    float S = sin((particles_[i].theta + t)*0.5);
-    float C = cos((particles_[i].theta + t)*0.5);
+
+    // low-pass filter the forward direction to determine the car's travel
+    // direction (heading); this way we spread out the particles in a turn
+    // assuming some unknown amount of understeer
+    float alpha = randn() * NOISE_STEER_s + NOISE_STEER_u;
+    float h = particles_[i].heading;
+    h += alpha*(t - h);
+
+    // disable for now
+    h = t;
+
+    float S = sin(h);
+    float C = cos(h);
 
     float dx = ds + randn()*NOISE_LONG*ds*dt;
     float dy = randn()*NOISE_LAT*ds*dt;
@@ -91,6 +106,7 @@ void Localizer::Predict(float ds, float w, float dt) {
     particles_[i].x += dx*C - dy*S;
     particles_[i].y += dx*S + dy*C;
     particles_[i].theta = t;
+    particles_[i].heading = h;
   }
 }
 
@@ -111,7 +127,9 @@ void Localizer::UpdateLM(float lm_bearing, float precision, float bogon_thresh) 
             dy = l.y - p.y;
       float z = dx*C + dy*S,
             y = dx*S - dy*C;
-      float diff = atan2f(y, z) - lm_bearing;
+      float d = sqrt(dx*dx + dy*dy);
+      float coneangle = 2*asin(fmin(CONE_RADIUS / d, 1));
+      float diff = fmax(fabs(atan2f(y, z) - lm_bearing) - coneangle, 0);
       float L = -precision*fmin(mindiffsqr, diff*diff);
 #ifdef PF_DEBUG
       printf("[%d]%f %f ", j, diff, L);
@@ -182,15 +200,20 @@ void Localizer::Resample() {
 bool Localizer::GetLocationEstimate(Particle *mean) const {
   mean->x = 0;
   mean->y = 0;
+  // FIXME: the theta and heading estimates are meaningless here; we really
+  // need to average sin/cosine and atan2 to find the result
   mean->theta = 0;
+  mean->heading = 0;
   for (int i = 0; i < n_particles_; i++) {
     mean->x += particles_[i].x;
     mean->y += particles_[i].y;
     mean->theta += particles_[i].theta;
+    mean->heading += particles_[i].heading;
   }
   mean->x /= n_particles_;
   mean->y /= n_particles_;
   mean->theta /= n_particles_;
+  mean->heading /= n_particles_;
   return true;
 }
 

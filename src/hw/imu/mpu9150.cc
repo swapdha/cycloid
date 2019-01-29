@@ -21,6 +21,10 @@ using Eigen::VectorXd;
 using Eigen::Matrix3f;
 using Eigen::MatrixXd;
 
+// acceleromter scale is 2g << ACCEL_SHIFT
+// readout is (16384 >> ACCEL_SHIFT) LSB/g
+const int ACCEL_SHIFT = 3;  // 0..3
+
 bool IMU::Init() {
   i2c_.Write(0x68, 107, 0x80);  // reset
   usleep(10000);
@@ -36,17 +40,21 @@ bool IMU::Init() {
   // 1kHz base sample rate
   i2c_.Write(0x68, 26, 0x03);
 
+  // // dlpf_cfg = 5, no fsync; 10Hz gyro bandwidth, 13.8ms delay
+  // 1kHz base sample rate
+  // i2c_.Write(0x68, 26, 0x05);
+
   // fchoice: 11 (enables filter above)
   // gyro 1000deg/sec full scale
   // test  fs   - fchoice_b
   // 000 | 10 | 0 | 00
   i2c_.Write(0x68, 27, 0x10);
 
-  // accel_fs_sel +/- 2g (00), default
+  // accel_fs_sel +/- 16g (11)
+  i2c_.Write(0x68, 28, ACCEL_SHIFT << 3);
 
-  // a_dlpfcfg = 3, 44.8Hz accel bw, 4.88ms delay
-  i2c_.Write(0x68, 29, 0x03);
-
+  // a_dlpfcfg = 6, low pass filter as much as possible
+  i2c_.Write(0x68, 29, 0x06);
 
   i2c_.Write(0x68, 56, 1);  // DRDY int enable (for checking timing on scope)
 
@@ -207,8 +215,8 @@ bool IMU::ReadIMU(Vector3f *accel, Vector3f *gyro, float *temp) {
     int16_t gx = (readbuf[ 8] << 8) | readbuf[ 9],
             gy = (readbuf[10] << 8) | readbuf[11],
             gz = (readbuf[12] << 8) | readbuf[13];
-    // we are in 16384 LSB/g scale (+/- 2g)
-    *accel = Vector3f(ax, ay, az) / 16384.0;
+    // we are in 2048 LSB/g scale (+/- 16g)
+    *accel = Vector3f(ax, ay, az) / (16384 >> ACCEL_SHIFT);
     // TODO: temp calibration
     // we are in +/- 1000 degrees/second full scale range
     // return radians/second
@@ -222,43 +230,3 @@ bool IMU::ReadIMU(Vector3f *accel, Vector3f *gyro, float *temp) {
   return false;
 }
 
-#if 0
-int main() {
-  fd_ = open("/dev/i2c-1", O_RDWR);
-  if (fd_ == -1) {
-    perror("/dev/i2c-1");
-    return 1;
-  }
-
-  InitMPU9150();
-  bool mag_calibrated = LoadMagCalibration();
-
-  time_t t0 = time(NULL);
-  for (;;) {
-    Vector3f mag, acc, gyro;
-    float temp;
-    if (ReadMag(&mag)) {
-      ReadIMU(&acc, &gyro, &temp);
-      if (CalibrateMag(mag, mag_calibrated, &mag)) {
-        printf("m [%f,%f,%f] a [%f,%f,%f] g [%f,%f,%f] temp %0.2f C\n",
-               mag[0], mag[1], mag[2],
-               acc[0], acc[1], acc[2],
-               gyro[0], gyro[1], gyro[2], temp);
-        fflush(stdout);
-        time_t t1 = time(NULL);
-        // if we've spent 10 seconds in a row calibrated, save it
-        if (t1 >= (t0 + 10)) {
-          t0 = t1;
-          SaveMagCalibration();
-          mag_calibrated = true;
-          fprintf(stderr, "[saved calibration]\e[K\n");
-        }
-      } else {
-        t0 = time(NULL);
-      }
-    }
-  }
-
-  return 0;
-}
-#endif
